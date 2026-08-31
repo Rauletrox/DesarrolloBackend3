@@ -1,0 +1,2 @@
+# Se evita adjuntar un agente en WSL porque estas pruebas no requieren mocks inline.
+mock-maker-subclass

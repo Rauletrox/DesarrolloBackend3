@@ -4,6 +4,7 @@ import com.backen3.Duoc.model.CuentaAnual;
 import com.backen3.Duoc.model.Interes;
 import com.backen3.Duoc.model.Transaccion;
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.HashMap;
@@ -12,10 +13,15 @@ import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.StepExecutionListener;
+import org.springframework.batch.core.SkipListener;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
@@ -40,9 +46,11 @@ import org.springframework.batch.item.UnexpectedInputException;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.boot.CommandLineRunner;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.DeadlockLoserDataAccessException;
 import org.springframework.dao.TransientDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.retry.RetryPolicy;
@@ -59,12 +67,13 @@ public class CsvBatchConfig {
     private static final int LIMITE_SALTOS = 20;
     private static final int LIMITE_REINTENTOS = 3;
 
-    // Job 1: procesa transacciones diarias y luego genera un resumen para detectar anomalias.
+    // Job 1: procesa transacciones diarias, genera el resumen y registra el resultado de la ejecucion.
     @Bean
     public Job reporteTransaccionesDiariasJob(JobRepository jobRepository,
             Step transaccionesStep,
             Step resumenTransaccionesDiariasStep) {
         return new JobBuilder("reporteTransaccionesDiariasJob", jobRepository)
+                .listener(registroEjecucionJobListener())
                 .start(transaccionesStep)
                 .next(resumenTransaccionesDiariasStep)
                 .build();
@@ -75,10 +84,35 @@ public class CsvBatchConfig {
     public CommandLineRunner ejecutarJobs(JobLauncher jobLauncher,
             Job reporteTransaccionesDiariasJob,
             Job calculoInteresesMensualesJob,
-            Job estadosCuentaAnualesJob) {
+            Job estadosCuentaAnualesJob,
+            @Value("${batch.ejecutar-al-inicio:true}") boolean ejecutarAlInicio,
+            @Value("${batch.job.name:}") String nombreJob) {
         return args -> {
+            // Se permite desactivar la ejecucion automatica para controlar cada lanzamiento por configuracion.
+            if (!ejecutarAlInicio) {
+                logger.info("Ejecucion automatica de Jobs deshabilitada por configuracion");
+                return;
+            }
+
             // run.id cambia en cada ejecucion para que Spring Batch no reutilice una ejecucion anterior.
             long runId = System.currentTimeMillis();
+
+            // Se ejecuta solo el Job indicado cuando se solicita revisar un proceso por separado.
+            if (!nombreJob.isBlank()) {
+                if (nombreJob.equals(reporteTransaccionesDiariasJob.getName())) {
+                    ejecutarJob(jobLauncher, reporteTransaccionesDiariasJob, runId);
+                    return;
+                }
+                if (nombreJob.equals(calculoInteresesMensualesJob.getName())) {
+                    ejecutarJob(jobLauncher, calculoInteresesMensualesJob, runId);
+                    return;
+                }
+                if (nombreJob.equals(estadosCuentaAnualesJob.getName())) {
+                    ejecutarJob(jobLauncher, estadosCuentaAnualesJob, runId);
+                    return;
+                }
+                throw new IllegalArgumentException("Job no reconocido: " + nombreJob);
+            }
 
             ejecutarJob(jobLauncher, reporteTransaccionesDiariasJob, runId);
             ejecutarJob(jobLauncher, calculoInteresesMensualesJob, runId + 1);
@@ -102,7 +136,8 @@ public class CsvBatchConfig {
         ThreadPoolTaskExecutor taskExecutor = new ThreadPoolTaskExecutor();
         taskExecutor.setCorePoolSize(HILOS_PARALELOS);
         taskExecutor.setMaxPoolSize(HILOS_PARALELOS);
-        taskExecutor.setQueueCapacity(0);
+        // Se usa una cola acotada para evitar bloqueos sin superar los tres hilos configurados.
+        taskExecutor.setQueueCapacity(HILOS_PARALELOS);
         taskExecutor.setThreadNamePrefix("batch-csv-");
         taskExecutor.setWaitForTasksToCompleteOnShutdown(false);
         taskExecutor.setAwaitTerminationSeconds(5);
@@ -138,6 +173,7 @@ public class CsvBatchConfig {
     public RetryPolicy politicaReintentoPersonalizada() {
         Map<Class<? extends Throwable>, Boolean> excepcionesReintentables = new HashMap<>();
         excepcionesReintentables.put(TransientDataAccessException.class, true);
+        excepcionesReintentables.put(DeadlockLoserDataAccessException.class, true);
         excepcionesReintentables.put(CannotAcquireLockException.class, true);
         return new SimpleRetryPolicy(LIMITE_REINTENTOS, excepcionesReintentables, true);
     }
@@ -153,25 +189,100 @@ public class CsvBatchConfig {
         return new SimpleCompletionPolicy(CHUNK_SIZE);
     }
 
-    // Job 2: carga cuentas desde intereses.csv y calcula el saldo final mensual.
+    // Se registra el estado y duracion reales de cada Job para revisar su ejecucion.
+    @Bean
+    public JobExecutionListener registroEjecucionJobListener() {
+        return new JobExecutionListener() {
+            @Override
+            public void beforeJob(JobExecution jobExecution) {
+                logger.info("Job iniciado: {}", jobExecution.getJobInstance().getJobName());
+            }
+
+            @Override
+            public void afterJob(JobExecution jobExecution) {
+                long duracionMs = 0;
+                if (jobExecution.getStartTime() != null && jobExecution.getEndTime() != null) {
+                    duracionMs = Duration.between(jobExecution.getStartTime(), jobExecution.getEndTime()).toMillis();
+                }
+                logger.info("Job finalizado: {} estado={} tiempoMs={} steps={}",
+                        jobExecution.getJobInstance().getJobName(), jobExecution.getStatus(), duracionMs,
+                        jobExecution.getStepExecutions().size());
+            }
+        };
+    }
+
+    // Se usan los contadores de Spring Batch para registrar el resultado real de cada Step.
+    @Bean
+    public StepExecutionListener registroEjecucionStepListener() {
+        return new StepExecutionListener() {
+            @Override
+            public org.springframework.batch.core.ExitStatus afterStep(StepExecution stepExecution) {
+                logger.info("Step finalizado: {} estado={} read={} filter={} write={} skip={}",
+                        stepExecution.getStepName(), stepExecution.getStatus(), stepExecution.getReadCount(),
+                        stepExecution.getFilterCount(), stepExecution.getWriteCount(), stepExecution.getSkipCount());
+                return stepExecution.getExitStatus();
+            }
+        };
+    }
+
+    // Se registran las omisiones para diferenciar errores recuperables de filtros del processor.
+    @Bean
+    public SkipListener<Object, Object> registroOmisionesListener() {
+        return new SkipListener<>() {
+            @Override
+            public void onSkipInRead(Throwable throwable) {
+                logger.warn("Registro omitido durante lectura: {}", throwable.getMessage());
+            }
+
+            @Override
+            public void onSkipInProcess(Object item, Throwable throwable) {
+                logger.warn("Registro omitido durante procesamiento: {}", throwable.getMessage());
+            }
+
+            @Override
+            public void onSkipInWrite(Object item, Throwable throwable) {
+                logger.warn("Registro omitido durante escritura: {}", throwable.getMessage());
+            }
+        };
+    }
+
+    // Job 2: carga intereses, calcula el saldo final mensual y registra el resultado de la ejecucion.
     @Bean
     public Job calculoInteresesMensualesJob(JobRepository jobRepository,
             Step interesesStep,
             Step calcularInteresesMensualesStep) {
         return new JobBuilder("calculoInteresesMensualesJob", jobRepository)
+                .listener(registroEjecucionJobListener())
                 .start(interesesStep)
                 .next(calcularInteresesMensualesStep)
                 .build();
     }
 
-    // Job 3: carga movimientos anuales y crea un informe agrupado por cuenta.
+    // Job 3: carga movimientos anuales, crea el informe y registra el resultado de la ejecucion.
     @Bean
     public Job estadosCuentaAnualesJob(JobRepository jobRepository,
+            Step limpiarCuentasAnualesStep,
             Step cuentasAnualesStep,
             Step informeEstadosCuentaAnualesStep) {
         return new JobBuilder("estadosCuentaAnualesJob", jobRepository)
-                .start(cuentasAnualesStep)
+                .listener(registroEjecucionJobListener())
+                .start(limpiarCuentasAnualesStep)
+                .next(cuentasAnualesStep)
                 .next(informeEstadosCuentaAnualesStep)
+                .build();
+    }
+
+    // Se limpian los movimientos anteriores para que una reejecucion no duplique el estado anual.
+    @Bean
+    public Step limpiarCuentasAnualesStep(JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            JdbcTemplate jdbcTemplate) {
+        return new StepBuilder("limpiarCuentasAnualesStep", jobRepository)
+                .tasklet((contribution, chunkContext) -> {
+                    jdbcTemplate.update("DELETE FROM cuentas_anuales");
+                    return RepeatStatus.FINISHED;
+                }, transactionManager)
+                .listener(registroEjecucionStepListener())
                 .build();
     }
 
@@ -202,6 +313,7 @@ public class CsvBatchConfig {
                     logger.info("Resumen de transacciones diarias generado correctamente");
                     return RepeatStatus.FINISHED;
                 }, transactionManager)
+                .listener(registroEjecucionStepListener())
                 .build();
     }
 
@@ -244,6 +356,7 @@ public class CsvBatchConfig {
                     logger.info("Intereses mensuales calculados y saldos finales actualizados");
                     return RepeatStatus.FINISHED;
                 }, transactionManager)
+                .listener(registroEjecucionStepListener())
                 .build();
     }
 
@@ -275,6 +388,7 @@ public class CsvBatchConfig {
                     logger.info("Informe anual de estados de cuenta generado correctamente");
                     return RepeatStatus.FINISHED;
                 }, transactionManager)
+                .listener(registroEjecucionStepListener())
                 .build();
     }
     // paso 1: leer transacciones.csv, procesa cada fila y la escribe en MySQL.
@@ -297,6 +411,9 @@ public class CsvBatchConfig {
                 .skipPolicy(politicaSaltoPersonalizada)
                 .retryPolicy(politicaReintentoPersonalizada)
                 .taskExecutor(batchTaskExecutor)
+                .throttleLimit(HILOS_PARALELOS)
+                .listener(registroEjecucionStepListener())
+                .listener(registroOmisionesListener())
                 .build();
     }
 
@@ -396,6 +513,9 @@ public class CsvBatchConfig {
                 .skipPolicy(politicaSaltoPersonalizada)
                 .retryPolicy(politicaReintentoPersonalizada)
                 .taskExecutor(batchTaskExecutor)
+                .throttleLimit(HILOS_PARALELOS)
+                .listener(registroEjecucionStepListener())
+                .listener(registroOmisionesListener())
                 .build();
     }
 
@@ -511,6 +631,9 @@ public class CsvBatchConfig {
                 .skipPolicy(politicaSaltoPersonalizada)
                 .retryPolicy(politicaReintentoPersonalizada)
                 .taskExecutor(batchTaskExecutor)
+                .throttleLimit(HILOS_PARALELOS)
+                .listener(registroEjecucionStepListener())
+                .listener(registroOmisionesListener())
                 .build();
     }
 

@@ -18,7 +18,7 @@ El flujo Batch esta dividido en tres Jobs principales:
 
 ## Tecnologias utilizadas
 
-- Java 21
+- Java 17
 - Spring Boot 3.5.7
 - Spring Batch
 - Spring Data JPA
@@ -60,81 +60,6 @@ Contiene la configuracion de Spring Batch:
 - Processors para validar, transformar y filtrar registros.
 - Writers para insertar datos procesados en MySQL.
 - Steps adicionales para generar resumenes e informes.
-- Politicas personalizadas de tolerancia a fallos.
-- Politica de escalamiento con ejecucion paralela.
-
-## Avance de esta semana
-
-Durante esta semana se agrego tolerancia a fallos y escalamiento a los Steps que procesan archivos CSV.
-
-### Politicas personalizadas y tolerancia a fallos
-
-Se incorporo configuracion `faultTolerant()` en los tres Steps principales de carga:
-
-- `transaccionesStep`
-- `interesesStep`
-- `cuentasAnualesStep`
-
-Cada Step utiliza:
-
-- `politicaSaltoPersonalizada`: permite omitir registros con errores recuperables, como problemas de formato, fechas invalidas o valores numericos incorrectos.
-- `politicaReintentoPersonalizada`: reintenta errores transitorios relacionados con la base de datos antes de marcar el Step como fallido.
-- `politicaChunkPersonalizada`: define el tamano del chunk utilizado por los Steps.
-
-La politica de salto tiene un limite de `20` registros omitidos:
-
-```java
-private static final int LIMITE_SALTOS = 20;
-```
-
-La politica de reintento usa un limite de `3` reintentos:
-
-```java
-private static final int LIMITE_REINTENTOS = 3;
-```
-
-Con esto, si un registro del CSV viene con datos incorrectos, el Job puede continuar procesando los demas registros mientras el error sea recuperable y no se supere el limite configurado.
-
-### Politica de escalamiento
-
-Se agrego un `ThreadPoolTaskExecutor` para ejecutar los Steps de carga con hilos paralelos.
-
-La cantidad de hilos se configura con:
-
-```java
-private static final int HILOS_PARALELOS = 3;
-```
-
-El executor queda limitado a tres hilos:
-
-```java
-taskExecutor.setCorePoolSize(HILOS_PARALELOS);
-taskExecutor.setMaxPoolSize(HILOS_PARALELOS);
-```
-
-Los Steps de carga usan este executor mediante:
-
-```java
-.taskExecutor(batchTaskExecutor)
-```
-
-Esto permite que el procesamiento de chunks se ejecute en paralelo utilizando hasta `3` hilos.
-
-### Chunks de tamano 5
-
-Tambien se configuro el tamano de chunk requerido:
-
-```java
-private static final int CHUNK_SIZE = 5;
-```
-
-Los Steps usan este valor mediante la politica:
-
-```java
-.<TipoEntrada, TipoSalida>chunk(politicaChunkPersonalizada, transactionManager)
-```
-
-Asi, cada transaccion de escritura se realiza en bloques de `5` registros.
 
 ### Carpeta `model`
 
@@ -186,7 +111,7 @@ spring.datasource.password=tu_password
 Desde la raiz del proyecto, compilar con:
 
 ```bash
-./mvnw clean compile
+./mvnw clean package
 ```
 
 Ejecutar la aplicacion con:
@@ -206,6 +131,37 @@ Al ejecutar la aplicacion, se lanzan automaticamente los tres Jobs en este orden
 1. `reporteTransaccionesDiariasJob`
 2. `calculoInteresesMensualesJob`
 3. `estadosCuentaAnualesJob`
+
+Para ejecutar solo un Job sin modificar codigo, indicar su nombre al iniciar la aplicacion:
+
+```bash
+./mvnw spring-boot:run -Dspring-boot.run.arguments="--batch.job.name=reporteTransaccionesDiariasJob"
+./mvnw spring-boot:run -Dspring-boot.run.arguments="--batch.job.name=calculoInteresesMensualesJob"
+./mvnw spring-boot:run -Dspring-boot.run.arguments="--batch.job.name=estadosCuentaAnualesJob"
+```
+
+## Procesamiento batch y manejo de errores
+
+Los Steps de carga usan chunks de 5 registros y un `ThreadPoolTaskExecutor` limitado a 3 hilos. Los readers de CSV estan sincronizados para evitar lecturas duplicadas cuando los chunks se procesan en paralelo.
+
+Los errores recuperables de lectura y conversion se omiten mediante una `SkipPolicy`, con un limite de 20 registros. Los errores transitorios de acceso a base de datos se reintentan hasta 3 veces mediante una `RetryPolicy`. Un error no incluido en esas politicas deja fallar el Step.
+
+Los listeners registran el inicio y termino de cada Job, su estado, tiempo de ejecucion y los contadores reales `read`, `filter`, `write` y `skip` de cada Step. Un filtro del processor no es una omision: aumenta solo `filterCount`.
+
+El Job anual limpia sus movimientos antes de volver a cargar el CSV, por lo que una nueva ejecucion con otros parametros no duplica la informacion usada por el informe.
+
+Cada lanzamiento usa un `run.id` nuevo, por lo que corresponde a una nueva instancia y no a un reinicio de una ejecucion fallida. Los readers sincronizados tienen `saveState=false` para ser seguros con los 3 hilos; por ello no se debe presentar esa nueva instancia como un restart desde estado persistido.
+
+## Pruebas
+
+Las pruebas usan una base H2 en memoria, aislada de MySQL, y no modifican datos de desarrollo. Cubren processors, politicas de omision y reintento, los tres Jobs completos, persistencia, resultados conocidos de regresion y continuidad ante un CSV con una fila invalida.
+
+Ejecutar las pruebas y la compilacion final con:
+
+```bash
+./mvnw test
+./mvnw clean package
+```
 
 ## Resultado esperado
 
