@@ -1,0 +1,3 @@
+package cl.duoc.bancoxyz.atm;
+import java.math.BigDecimal; import org.springframework.web.bind.annotation.*;
+@RestController @RequestMapping("/api/bff/atm/accounts") public class AtmBffController {private final AtmBankingClient core;public AtmBffController(AtmBankingClient core){this.core=core;}@GetMapping("/{id}/balance") public AtmBankingClient.Balance balance(@PathVariable Integer id){return core.balance(id);}@PostMapping("/{id}/withdraw") public AtmBankingClient.Withdrawal withdraw(@PathVariable Integer id,@RequestBody WithdrawRequest request){return core.withdraw(id,request.amount());}public record WithdrawRequest(BigDecimal amount){} }

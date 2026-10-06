@@ -1,0 +1,51 @@
+package cl.duoc.bancoxyz.mobile;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.*;
+import org.springframework.cloud.client.circuitbreaker.CircuitBreakerFactory;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.server.ResponseStatusException;
+
+// Protege las consultas mobile al Core ante fallos temporales.
+@Service
+public class MobileBankingClient {
+    private final RestClient rest;
+    private final CircuitBreakerFactory<?, ?> breakers;
+
+    public MobileBankingClient(RestClient.Builder b, CircuitBreakerFactory<?, ?> breakers) {
+        rest = b.baseUrl("http://core-banking-service").build();
+        this.breakers = breakers;
+    }
+
+    public Account account(Integer id) {
+        return breakers.create("coreMobile")
+                .run(() -> rest.get().uri("/api/core/accounts/{id}", id).retrieve().body(Account.class), e -> {
+                    throw unavailable();
+                });
+    }
+
+    public List<Movement> movements(Integer id) {
+        return breakers.create("coreMobile").run(() -> {
+            Movement[] r = rest.get().uri("/api/core/accounts/{id}/movements/latest", id).retrieve()
+                    .body(Movement[].class);
+            return Arrays.asList(r == null ? new Movement[0] : r);
+        }, e -> {
+            throw unavailable();
+        });
+    }
+
+    private ResponseStatusException unavailable() {
+        return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                "Servicio bancario temporalmente no disponible");
+    }
+
+    public record Account(Integer accountId, String accountName, String accountType, BigDecimal initialBalance,
+            BigDecimal interestRate, BigDecimal finalBalance) {
+    }
+
+    public record Movement(LocalDate date, String transaction, BigDecimal amount) {
+    }
+}

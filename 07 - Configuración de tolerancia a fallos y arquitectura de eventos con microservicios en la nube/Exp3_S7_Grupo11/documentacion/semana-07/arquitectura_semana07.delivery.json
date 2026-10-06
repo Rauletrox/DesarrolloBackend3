@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "31782db5-45d6-41c0-b35c-0c24370377fd",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/tmp/arquitectura_semana07_s7.json",
+  "output": "/home/francisco/proyecto/BACKEND III/SEMANA 7/Exp3_S7_Grupo11/documentacion/semana-07/arquitectura_semana07.html",
+  "specification": {
+    "sha256": "e99a04797607637161e5ebf64776d257f828f1170a79079a52e23e7963767e6a",
+    "bytes": 8265
+  },
+  "artifact": {
+    "sha256": "5b3b2f42e606d7c41548fdd6a64f8e82e98abde70ef3b02a6ba0632a43a69bbf",
+    "bytes": 772293
+  }
+}
