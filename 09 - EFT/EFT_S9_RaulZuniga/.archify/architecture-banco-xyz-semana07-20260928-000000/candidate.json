@@ -1,0 +1,276 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Banco XYZ - Semana 07\nArquitectura Event-Driven con Apache Kafka",
+    "output": "documentacion/semana-07/arquitectura_semana07.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/FranciscoHenriquezAlvarez/Bimestre_08_BCK3_Exp3_S6_Grupo11.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "095d9430a8dab6192d697467fb81890d4c3905af"
+    }
+  },
+  "components": [
+    {
+      "id": "atm",
+      "type": "external",
+      "label": "Cliente / ATM",
+      "sublabel": "Canal de retiro",
+      "pos": [35, 280],
+      "size": [155, 70]
+    },
+    {
+      "id": "bff-atm",
+      "type": "backend",
+      "label": "BFF ATM Service",
+      "sublabel": "Spring Boot · JWT / Spring Security",
+      "tag": "Productor de retiro asíncrono",
+      "pos": [255, 260],
+      "size": [220, 105],
+      "sources": [
+        { "path": "proyecto/bff-atm-service/src/main/java/cl/duoc/bancoxyz/atm/AtmBffController.java", "line": 28, "end_line": 34, "label": "Publicación del retiro" },
+        { "path": "proyecto/bff-atm-service/src/main/java/cl/duoc/bancoxyz/atm/AtmBankingClient.java", "line": 22, "end_line": 32, "label": "Consultas coreAtm" },
+        { "path": "proyecto/bff-atm-service/src/main/java/cl/duoc/bancoxyz/config/SecurityConfig.java", "line": 47, "end_line": 59, "label": "Seguridad JWT" }
+      ]
+    },
+    {
+      "id": "withdrawal-requested",
+      "type": "messagebus",
+      "label": "bank.withdrawal.requested",
+      "sublabel": "3 particiones · clave: accountId",
+      "tag": "WithdrawalRequested",
+      "pos": [555, 260],
+      "size": [245, 88],
+      "sources": [
+        { "path": "proyecto/core-banking-service/src/main/java/cl/duoc/bancoxyz/core/config/KafkaTopicsConfiguration.java", "line": 13, "end_line": 20, "label": "3 particiones" },
+        { "path": "proyecto/bff-atm-service/src/main/java/cl/duoc/bancoxyz/atm/kafka/AsyncWithdrawalProducer.java", "line": 19, "end_line": 21, "label": "Clave accountId" }
+      ]
+    },
+    {
+      "id": "withdrawal-completed",
+      "type": "messagebus",
+      "label": "bank.withdrawal.completed",
+      "sublabel": "3 particiones · saldo final",
+      "tag": "WithdrawalCompleted",
+      "pos": [555, 455],
+      "size": [245, 80],
+      "sources": [
+        { "path": "proyecto/core-banking-service/src/main/java/cl/duoc/bancoxyz/core/config/KafkaTopicsConfiguration.java", "line": 23, "end_line": 25, "label": "Topic completed" },
+        { "path": "proyecto/core-banking-service/src/main/java/cl/duoc/bancoxyz/core/kafka/WithdrawalRequestedConsumer.java", "line": 29, "end_line": 34, "label": "Publicación resultado" }
+      ]
+    },
+    {
+      "id": "withdrawal-rejected",
+      "type": "messagebus",
+      "label": "bank.withdrawal.rejected",
+      "sublabel": "3 particiones · motivo de rechazo",
+      "tag": "WithdrawalRejected",
+      "pos": [555, 575],
+      "size": [245, 80],
+      "sources": [
+        { "path": "proyecto/core-banking-service/src/main/java/cl/duoc/bancoxyz/core/config/KafkaTopicsConfiguration.java", "line": 28, "end_line": 30, "label": "Topic rejected" },
+        { "path": "proyecto/core-banking-service/src/main/java/cl/duoc/bancoxyz/core/kafka/WithdrawalRequestedConsumer.java", "line": 29, "end_line": 34, "label": "Publicación resultado" }
+      ]
+    },
+    {
+      "id": "core-banking",
+      "type": "backend",
+      "label": "Core Banking Service",
+      "sublabel": "Consumer Group: core-banking-withdrawal-group",
+      "tag": "Concurrency: 3",
+      "pos": [875, 250],
+      "size": [300, 112],
+      "sources": [
+        { "path": "proyecto/core-banking-service/src/main/java/cl/duoc/bancoxyz/core/kafka/WithdrawalRequestedConsumer.java", "line": 24, "end_line": 35, "label": "Consume y publica" },
+        { "path": "proyecto/config-repo/core-banking-service.yml", "line": 5, "end_line": 14, "label": "Grupo y concurrencia" },
+        { "path": "proyecto/core-banking-service/src/main/java/cl/duoc/bancoxyz/core/kafka/AsyncWithdrawalService.java", "line": 31, "end_line": 74, "label": "Procesa retiro" }
+      ]
+    },
+    {
+      "id": "postgresql",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "Estado operativo, transacciones y Event Store",
+      "tag": "Persistencia del retiro ATM",
+      "pos": [1245, 255],
+      "size": [265, 102],
+      "sources": [
+        { "path": "proyecto/core-banking-service/src/main/resources/schema.sql", "line": 10, "end_line": 17, "label": "Saldo operativo" },
+        { "path": "proyecto/core-banking-service/src/main/resources/schema.sql", "line": 40, "end_line": 64, "label": "Tablas del retiro" },
+        { "path": "proyecto/core-banking-service/src/main/java/cl/duoc/bancoxyz/core/kafka/AsyncWithdrawalService.java", "line": 31, "end_line": 124, "label": "Persistencia" }
+      ]
+    },
+    {
+      "id": "eureka",
+      "type": "cloud",
+      "label": "Eureka Server",
+      "sublabel": "Descubrimiento de servicios",
+      "pos": [290, 735],
+      "size": [190, 66],
+      "sources": [
+        { "path": "proyecto/eureka-server/src/main/java/cl/duoc/bancoxyz/eureka/EurekaServerApplication.java", "line": 7, "end_line": 13, "label": "Servidor Eureka" },
+        { "path": "proyecto/docker-compose.yml", "line": 104, "end_line": 117, "label": "Core registrado" }
+      ]
+    },
+    {
+      "id": "config-server",
+      "type": "cloud",
+      "label": "Config Server",
+      "sublabel": "Configuración externa",
+      "pos": [925, 735],
+      "size": [190, 66],
+      "sources": [
+        { "path": "proyecto/config-server/src/main/java/cl/duoc/bancoxyz/configserver/ConfigServerApplication.java", "line": 7, "end_line": 13, "label": "Config Server" },
+        { "path": "proyecto/docker-compose.yml", "line": 104, "end_line": 117, "label": "Configuración Core" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Apache Kafka · 3 particiones por tópico",
+      "wraps": ["withdrawal-requested", "withdrawal-completed", "withdrawal-rejected"],
+      "pad": 30
+    }
+  ],
+  "connections": [
+    {
+      "id": "atm-to-bff",
+      "from": "atm",
+      "to": "bff-atm",
+      "label": "Retiro · HTTPS + JWT",
+      "variant": "emphasis"
+    },
+    {
+      "id": "bff-to-requested",
+      "from": "bff-atm",
+      "to": "withdrawal-requested",
+      "label": "Publica asíncrono",
+      "variant": "emphasis"
+    },
+    {
+      "id": "requested-to-core",
+      "from": "withdrawal-requested",
+      "to": "core-banking",
+      "label": "Consume",
+      "variant": "emphasis"
+    },
+    {
+      "id": "core-to-postgresql",
+      "from": "core-banking",
+      "to": "postgresql",
+      "label": "Procesa y persiste",
+      "variant": "emphasis"
+    },
+    {
+      "id": "core-to-completed",
+      "from": "core-banking",
+      "to": "withdrawal-completed",
+      "label": "Resultado exitoso",
+      "fromSide": "bottom",
+      "toSide": "right",
+      "route": "orthogonal-h",
+      "via": [[1025, 415], [835, 415]],
+      "labelDy": -12
+    },
+    {
+      "id": "core-to-rejected",
+      "from": "core-banking",
+      "to": "withdrawal-rejected",
+      "label": "Motivo de rechazo",
+      "fromSide": "bottom",
+      "toSide": "right",
+      "route": "orthogonal-h",
+      "via": [[1050, 690], [835, 690]],
+      "labelDy": 14
+    },
+    {
+      "id": "bff-to-core-sync",
+      "from": "bff-atm",
+      "to": "core-banking",
+      "label": "Consultas sincrónicas · Resilience4j coreAtm",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "top",
+      "route": "orthogonal-h",
+      "via": [[365, 170], [1025, 170]],
+      "labelDy": -12
+    },
+    {
+      "id": "bff-to-eureka",
+      "from": "bff-atm",
+      "to": "eureka",
+      "label": "registro",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "core-to-eureka",
+      "from": "core-banking",
+      "to": "eureka",
+      "label": "registro",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "orthogonal-h",
+      "via": [[1025, 700], [385, 700]]
+    },
+    {
+      "id": "config-to-bff",
+      "from": "config-server",
+      "to": "bff-atm",
+      "label": "configuración",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "bottom",
+      "route": "orthogonal-h",
+      "via": [[860, 705], [365, 705]]
+    },
+    {
+      "id": "config-to-core",
+      "from": "config-server",
+      "to": "core-banking",
+      "label": "configuración",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Evento de solicitud",
+      "items": [
+        "WithdrawalRequested: eventId, transactionId, accountId, amount, occurredAt",
+        "El BFF publica usando accountId como clave Kafka."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Resultados publicados por Core Banking",
+      "items": [
+        "WithdrawalCompleted: resultado exitoso y saldo final.",
+        "WithdrawalRejected: motivo de rechazo."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Persistencia e idempotencia",
+      "items": [
+        "banking_events: Event Store acotado; processed_events: control de idempotencia por eventId.",
+        "withdrawal_transactions: PENDING / COMPLETED / REJECTED; intereses_mensuales: saldo operacional actual."
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Alcance",
+      "items": [
+        "Event Sourcing acotado al flujo de retiro ATM.",
+        "Las consultas de saldo y estado siguen siendo sincrónicas y están protegidas con Resilience4j coreAtm."
+      ]
+    }
+  ]
+}
